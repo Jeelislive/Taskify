@@ -17,8 +17,7 @@
     "@dnd-kit/sortable": "^8.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "better-sqlite3": "^11.1.2",
-    "openai": "^4.53.0",
-    "axios": "^1.7.2",
+    "@google/generative-ai": "^0.17.1",
     "date-fns": "^3.6.0",
     "lucide-react": "^0.408.0",
     "clsx": "^2.1.1"
