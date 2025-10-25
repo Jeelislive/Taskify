@@ -34,7 +34,8 @@ export default function Home() {
     try {
       console.log('Parsing transcription:', transcription);
       
-      const response = await fetch('/api/parse-tasks', {
+      // Step 1: Parse tasks with AI
+      const parseResponse = await fetch('/api/parse-tasks', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -42,27 +43,39 @@ export default function Home() {
         body: JSON.stringify({ transcription }),
       });
 
-      const data = await response.json();
+      const parseData = await parseResponse.json();
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to parse tasks');
+      if (!parseResponse.ok) {
+        throw new Error(parseData.error || 'Failed to parse tasks');
       }
 
-      // Add IDs to tasks
-      const tasksWithIds = data.tasks.map((task: any, index: number) => ({
+      // Step 2: Prepare tasks with metadata
+      const tasksToSave = parseData.tasks.map((task: any, index: number) => ({
         ...task,
-        id: `task-${Date.now()}-${index}`,
         completed: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
         position: index,
       }));
 
-      setTasks(tasksWithIds);
-      console.log('Parsed tasks:', tasksWithIds);
+      // Step 3: Save tasks to Supabase
+      const saveResponse = await fetch('/api/tasks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ tasks: tasksToSave }),
+      });
+
+      const saveData = await saveResponse.json();
+
+      if (!saveResponse.ok) {
+        throw new Error(saveData.error || 'Failed to save tasks');
+      }
+
+      setTasks(saveData.tasks);
+      console.log('Tasks saved to database:', saveData.tasks);
     } catch (error) {
-      console.error('Error parsing tasks:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to parse tasks';
+      console.error('Error processing tasks:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to process tasks';
       setError(errorMessage);
     } finally {
       setIsParsing(false);
