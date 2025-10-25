@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import VoiceRecorder from './components/VoiceRecorder';
 import TranscriptionDisplay from './components/TranscriptionDisplay';
-import TaskList from './components/TaskList';
+import TaskBoard from './components/TaskBoard';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Sparkles, ArrowLeft, Loader2 } from 'lucide-react';
+import { Sparkles, ArrowLeft, Loader2, Plus } from 'lucide-react';
 import { Task } from '@/lib/types';
 
 export default function Home() {
@@ -13,6 +13,29 @@ export default function Home() {
   const [error, setError] = useState<string>('');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isParsing, setIsParsing] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [showVoiceInput, setShowVoiceInput] = useState(false);
+
+  // Load tasks on mount
+  useEffect(() => {
+    loadTasks();
+  }, []);
+
+  const loadTasks = async () => {
+    try {
+      setIsLoading(true);
+      const response = await fetch('/api/tasks');
+      const data = await response.json();
+      
+      if (response.ok) {
+        setTasks(data.tasks || []);
+      }
+    } catch (error) {
+      console.error('Error loading tasks:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleTranscriptionComplete = (text: string) => {
     setTranscription(text);
@@ -26,7 +49,7 @@ export default function Home() {
 
   const handleClearTranscription = () => {
     setTranscription('');
-    setTasks([]);
+    setShowVoiceInput(false);
   };
 
   const handleConfirmTranscription = async () => {
@@ -71,7 +94,10 @@ export default function Home() {
         throw new Error(saveData.error || 'Failed to save tasks');
       }
 
-      setTasks(saveData.tasks);
+      // Reload all tasks to get the updated list
+      await loadTasks();
+      setTranscription('');
+      setShowVoiceInput(false);
       console.log('Tasks saved to database:', saveData.tasks);
     } catch (error) {
       console.error('Error processing tasks:', error);
@@ -82,9 +108,59 @@ export default function Home() {
     }
   };
 
-  const handleBackToRecording = () => {
-    setTranscription('');
-    setTasks([]);
+  const handleUpdateTasks = async (updatedTasks: Task[]) => {
+    // Optimistically update UI
+    setTasks(updatedTasks);
+
+    // Sync with database
+    try {
+      await fetch('/api/tasks', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tasks: updatedTasks }),
+      });
+    } catch (error) {
+      console.error('Error updating tasks:', error);
+      setError('Failed to update tasks');
+      // Reload tasks to revert to server state
+      loadTasks();
+    }
+  };
+
+  const handleToggleComplete = async (taskId: string, completed: boolean) => {
+    // Optimistically update UI
+    setTasks(tasks.map(task => 
+      task.id === taskId ? { ...task, completed } : task
+    ));
+
+    // Sync with database
+    try {
+      await fetch(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed }),
+      });
+    } catch (error) {
+      console.error('Error toggling task:', error);
+      setError('Failed to update task');
+      loadTasks();
+    }
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    // Optimistically update UI
+    setTasks(tasks.filter(task => task.id !== taskId));
+
+    // Sync with database
+    try {
+      await fetch(`/api/tasks/${taskId}`, {
+        method: 'DELETE',
+      });
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      setError('Failed to delete task');
+      loadTasks();
+    }
   };
 
   return (
@@ -181,104 +257,118 @@ export default function Home() {
             )}
           </AnimatePresence>
 
-          <motion.div
-            className="w-full max-w-4xl"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.2 }}
-          >
-            {!transcription ? (
-              <>
-                <VoiceRecorder
-                  onTranscriptionComplete={handleTranscriptionComplete}
-                  onError={handleError}
-                />
-                <motion.div
-                  className="mt-6 bg-gradient-to-r from-blue-50 to-purple-50 backdrop-blur-sm border-2 border-blue-300 rounded-xl p-5 shadow-md"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.4 }}
-                >
-                  <h3 className="text-base font-bold text-blue-900 mb-3 flex items-center gap-2">
-                    💡 How to use (IMPORTANT!)
-                  </h3>
-                  <div className="space-y-2 text-sm text-blue-900">
-                    <div className="flex items-start gap-2">
-                      <span className="font-bold">1.</span>
-                      <p>Click mic button → Allow microphone access</p>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="font-bold">2.</span>
-                      <p>Wait for yellow box that says "Waiting for speech..."</p>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="font-bold">3.</span>
-                      <p><strong>START SPEAKING</strong> - speak clearly for at least 5 seconds</p>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="font-bold">4.</span>
-                      <p>Watch yellow box turn <strong className="text-green-700">GREEN</strong> with your words!</p>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="font-bold">5.</span>
-                      <p>Keep talking until done, then click STOP</p>
-                    </div>
-                    <div className="mt-3 p-2 bg-yellow-50 border border-yellow-400 rounded">
-                      <p className="text-xs text-yellow-900">
-                        ⚠️ <strong>If you don't see the GREEN box</strong>, your mic isn't picking up audio. Speak louder or check mic permissions!
-                      </p>
-                    </div>
-                  </div>
-                </motion.div>
-              </>
-            ) : tasks.length === 0 ? (
-              <>
-                <TranscriptionDisplay
-                  text={transcription}
-                  onClear={handleClearTranscription}
-                  onConfirm={handleConfirmTranscription}
-                />
-                {isParsing && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="mt-6 bg-gradient-to-r from-purple-50 to-pink-50 border-2 border-purple-300 rounded-xl p-6 text-center"
-                  >
-                    <Loader2 className="w-12 h-12 text-purple-600 animate-spin mx-auto mb-3" />
-                    <p className="text-lg font-bold text-purple-900 mb-1">
-                      AI is analyzing your tasks...
-                    </p>
-                    <p className="text-sm text-purple-700">
-                      Extracting tasks, categories, and due dates
-                    </p>
-                  </motion.div>
+          <div className="w-full max-w-7xl">
+            {isLoading ? (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="flex flex-col items-center justify-center py-20"
+              >
+                <Loader2 className="w-12 h-12 text-purple-600 animate-spin mb-4" />
+                <p className="text-gray-600">Loading your tasks...</p>
+              </motion.div>
+            ) : showVoiceInput ? (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="max-w-4xl mx-auto"
+              >
+                {!transcription ? (
+                  <>
+                    <VoiceRecorder
+                      onTranscriptionComplete={handleTranscriptionComplete}
+                      onError={handleError}
+                    />
+                    <motion.button
+                      onClick={() => setShowVoiceInput(false)}
+                      className="mt-4 flex items-center gap-2 px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors mx-auto"
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                      Back to Dashboard
+                    </motion.button>
+                  </>
+                ) : (
+                  <>
+                    <TranscriptionDisplay
+                      text={transcription}
+                      onClear={handleClearTranscription}
+                      onConfirm={handleConfirmTranscription}
+                    />
+                    {isParsing && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mt-6 bg-gradient-to-r from-purple-50 to-pink-50 border-2 border-purple-300 rounded-xl p-6 text-center"
+                      >
+                        <Loader2 className="w-12 h-12 text-purple-600 animate-spin mx-auto mb-3" />
+                        <p className="text-lg font-bold text-purple-900 mb-1">
+                          AI is analyzing your tasks...
+                        </p>
+                        <p className="text-sm text-purple-700">
+                          Extracting tasks, categories, and due dates
+                        </p>
+                      </motion.div>
+                    )}
+                  </>
                 )}
-              </>
+              </motion.div>
             ) : (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="space-y-6"
               >
-                <div className="flex items-center justify-between">
-                  <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-                    Your Tasks ({tasks.length})
-                  </h2>
+                <div className="flex items-center justify-between mb-8">
+                  <div>
+                    <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+                      Your Task Board
+                    </h2>
+                    <p className="text-gray-600 mt-1">
+                      {tasks.length} {tasks.length === 1 ? 'task' : 'tasks'} • Drag to organize
+                    </p>
+                  </div>
                   <motion.button
-                    onClick={handleBackToRecording}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors"
-                    whileHover={{ scale: 1.05 }}
+                    onClick={() => setShowVoiceInput(true)}
+                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-bold rounded-xl shadow-lg transition-all"
+                    whileHover={{ scale: 1.05, boxShadow: "0 20px 40px rgba(139, 92, 246, 0.3)" }}
                     whileTap={{ scale: 0.95 }}
                   >
-                    <ArrowLeft className="w-4 h-4" />
-                    New Recording
+                    <Plus className="w-5 h-5" />
+                    Add Tasks with Voice
                   </motion.button>
                 </div>
 
-                <TaskList tasks={tasks} />
+                {tasks.length === 0 ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="text-center py-20 bg-white/50 backdrop-blur-sm rounded-2xl border-2 border-dashed border-gray-300"
+                  >
+                    <div className="text-6xl mb-4">🎙️</div>
+                    <h3 className="text-2xl font-bold text-gray-700 mb-2">No tasks yet!</h3>
+                    <p className="text-gray-600 mb-6">Start by adding your first task with voice</p>
+                    <motion.button
+                      onClick={() => setShowVoiceInput(true)}
+                      className="px-8 py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-bold rounded-xl shadow-lg"
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      🎤 Record Your Tasks
+                    </motion.button>
+                  </motion.div>
+                ) : (
+                  <TaskBoard
+                    tasks={tasks}
+                    onUpdateTasks={handleUpdateTasks}
+                    onToggleComplete={handleToggleComplete}
+                    onDeleteTask={handleDeleteTask}
+                  />
+                )}
               </motion.div>
             )}
-          </motion.div>
+          </div>
         </div>
       </div>
     </main>
