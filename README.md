@@ -69,15 +69,6 @@ baaz-task-manager/
 └── public/             # Static assets
 ```
 
-## Development Phases
-
-- [x] Phase 1: Project setup and configuration
-- [ ] Phase 2: Voice recording and transcription
-- [ ] Phase 3: AI task parsing and extraction
-- [ ] Phase 4: Backend API and database
-- [ ] Phase 5: Drag-and-drop dashboard
-- [ ] Phase 6: Polish and animations
-
 ## License
 
 MIT
