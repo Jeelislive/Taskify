@@ -20,8 +20,10 @@ export async function POST(request: NextRequest) {
     }
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    
+    // Using official Gemini 2.5 Flash model (as per https://ai.google.dev/gemini-api/docs)
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.5-pro' // Using the most capable model
+      model: 'gemini-2.0-flash-exp' // Most balanced model with 1M token context
     });
 
     const prompt = `You are a task extraction AI. Extract individual tasks from the following transcription and return them as a JSON array.
@@ -59,45 +61,83 @@ Return format:
 ]`;
 
     console.log('Sending to Gemini AI...');
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
     
-    console.log('Gemini response:', text);
+    // Retry logic for API overload
+    let retries = 3;
+    let lastError: any = null;
 
-    // Clean the response - remove markdown code blocks if present
-    let cleanedText = text.trim();
-    if (cleanedText.startsWith('```json')) {
-      cleanedText = cleanedText.replace(/```json\n?/, '').replace(/\n?```$/, '');
-    } else if (cleanedText.startsWith('```')) {
-      cleanedText = cleanedText.replace(/```\n?/, '').replace(/\n?```$/, '');
+    while (retries > 0) {
+      try {
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        
+        console.log('Gemini response:', text);
+
+        // Clean the response - remove markdown code blocks if present
+        let cleanedText = text.trim();
+        if (cleanedText.startsWith('```json')) {
+          cleanedText = cleanedText.replace(/```json\n?/, '').replace(/\n?```$/, '');
+        } else if (cleanedText.startsWith('```')) {
+          cleanedText = cleanedText.replace(/```\n?/, '').replace(/\n?```$/, '');
+        }
+
+        const tasks = JSON.parse(cleanedText);
+
+        if (!Array.isArray(tasks)) {
+          throw new Error('Invalid response format from AI');
+        }
+
+        return NextResponse.json({ 
+          tasks,
+          success: true 
+        });
+
+      } catch (error: any) {
+        lastError = error;
+        retries--;
+        
+        // Check if it's a retryable error (503, 429, overload)
+        const errorMessage = error?.message || '';
+        const isRetryable = 
+          errorMessage.includes('503') || 
+          errorMessage.includes('429') || 
+          errorMessage.includes('overloaded') ||
+          errorMessage.includes('rate limit');
+
+        if (retries > 0 && isRetryable) {
+          console.log(`API overloaded, retrying... (${retries} attempts left)`);
+          // Exponential backoff: wait longer each retry
+          await new Promise(resolve => setTimeout(resolve, (4 - retries) * 1000));
+          continue;
+        }
+        
+        break;
+      }
     }
 
-    const tasks = JSON.parse(cleanedText);
-
-    if (!Array.isArray(tasks)) {
-      throw new Error('Invalid response format from AI');
-    }
-
-    return NextResponse.json({ 
-      tasks,
-      success: true 
-    });
-
-  } catch (error) {
-    console.error('Task parsing error:', error);
+    // If all retries failed
+    console.error('Task parsing error after retries:', lastError);
     
-    if (error instanceof Error) {
+    if (lastError instanceof Error) {
       return NextResponse.json(
-        { error: error.message },
-        { status: 500 }
+        { error: lastError.message.includes('overloaded') 
+          ? 'AI service is temporarily busy. Please try again in a moment.' 
+          : lastError.message 
+        },
+        { status: 503 }
       );
     }
 
     return NextResponse.json(
-      { error: 'Failed to parse tasks' },
+      { error: 'Failed to parse tasks. Please try again.' },
+      { status: 500 }
+    );
+  } catch (error) {
+    console.error('Unexpected error:', error);
+    return NextResponse.json(
+      { error: 'An unexpected error occurred' },
       { status: 500 }
     );
   }
 }
-

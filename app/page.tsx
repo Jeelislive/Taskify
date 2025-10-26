@@ -1,27 +1,88 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Loader2, Mic, Plus } from 'lucide-react';
+import { Task } from '@/lib/types';
+import { 
+  showTaskCreated, 
+  showTaskCompleted, 
+  showTaskDeleted, 
+  showBulkDeleteToast,
+  showErrorToast,
+  showSuccessToast 
+} from '@/lib/toast';
+import Sidebar from './components/layout/Sidebar';
+import TopBar from './components/layout/TopBar';
+import RightPanel from './components/layout/RightPanel';
+import StatusColumn from './components/cards/StatusColumn';
+import CategoryColumn from './components/CategoryColumn';
 import VoiceRecorder from './components/VoiceRecorder';
 import TranscriptionDisplay from './components/TranscriptionDisplay';
-import TaskBoard from './components/TaskBoard';
-import { AnimatePresence, motion } from 'framer-motion';
-import { Sparkles, ArrowLeft, Loader2, Plus } from 'lucide-react';
-import { Task } from '@/lib/types';
+import { DndContext, DragEndEvent, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import Analytics from './components/views/Analytics';
+import Calendar from './components/views/Calendar';
+import Reports from './components/views/Reports';
+import Completed from './components/views/Completed';
+import EditTaskModal from './components/modals/EditTaskModal';
 
 export default function Home() {
   const [transcription, setTranscription] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [filteredTasks, setFilteredTasks] = useState<Task[]>([]);
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [isParsing, setIsParsing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [showVoiceInput, setShowVoiceInput] = useState(false);
+  const [currentView, setCurrentView] = useState('dashboard');
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
 
   // Load tasks on mount
   useEffect(() => {
     loadTasks();
   }, []);
 
-  const loadTasks = async () => {
+  // Filter tasks based on search query
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setFilteredTasks(tasks);
+      return;
+    }
+
+    const query = searchQuery.toLowerCase();
+    const filtered = tasks.filter(task => 
+      task.title.toLowerCase().includes(query) ||
+      task.description?.toLowerCase().includes(query) ||
+      task.category.toLowerCase().includes(query) ||
+      task.priorityLevel.toLowerCase().includes(query)
+    );
+    setFilteredTasks(filtered);
+  }, [tasks, searchQuery]);
+
+  const handleSearch = (query: string) => {
+    setSearchQuery(query);
+  };
+
+  // DnD sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    })
+  );
+
+  // Separate tasks by category (use filtered tasks if searching)
+  const tasksToDisplay = searchQuery ? filteredTasks : tasks;
+  const tasksByCategory = {
+    Work: tasksToDisplay.filter(t => !t.completed && t.category === 'Work'),
+    Personal: tasksToDisplay.filter(t => !t.completed && t.category === 'Personal'),
+    Health: tasksToDisplay.filter(t => !t.completed && t.category === 'Health'),
+    Errands: tasksToDisplay.filter(t => !t.completed && t.category === 'Errands'),
+  };
+
+  const loadTasks = async (showToast = false) => {
     try {
       setIsLoading(true);
       const response = await fetch('/api/tasks');
@@ -29,9 +90,15 @@ export default function Home() {
       
       if (response.ok) {
         setTasks(data.tasks || []);
+        if (showToast) {
+          showSuccessToast('Tasks refreshed successfully!');
+        }
       }
     } catch (error) {
       console.error('Error loading tasks:', error);
+      if (showToast) {
+        showErrorToast('Failed to load tasks');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -44,6 +111,7 @@ export default function Home() {
 
   const handleError = (errorMessage: string) => {
     setError(errorMessage);
+    showErrorToast(errorMessage);
     setTimeout(() => setError(''), 5000);
   };
 
@@ -96,6 +164,7 @@ export default function Home() {
 
       // Reload all tasks to get the updated list
       await loadTasks();
+      showTaskCreated(saveData.tasks.length);
       setTranscription('');
       setShowVoiceInput(false);
       console.log('Tasks saved to database:', saveData.tasks);
@@ -103,6 +172,7 @@ export default function Home() {
       console.error('Error processing tasks:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to process tasks';
       setError(errorMessage);
+      showErrorToast(errorMessage);
     } finally {
       setIsParsing(false);
     }
@@ -127,7 +197,63 @@ export default function Home() {
     }
   };
 
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    if (!over) return;
+
+    const activeTask = tasks.find(t => t.id === active.id);
+    if (!activeTask) return;
+
+    // Determine the target category
+    let newCategory: 'Work' | 'Personal' | 'Health' | 'Errands';
+    
+    // Check if dropped on a category column or on another task
+    const validCategories = ['Work', 'Personal', 'Health', 'Errands'];
+    if (validCategories.includes(over.id as string)) {
+      // Dropped on a category column
+      newCategory = over.id as 'Work' | 'Personal' | 'Health' | 'Errands';
+    } else {
+      // Dropped on another task - find that task's category
+      const overTask = tasks.find(t => t.id === over.id);
+      if (!overTask) return;
+      newCategory = overTask.category;
+    }
+    
+    // Only update if category changed
+    if (activeTask.category === newCategory) return;
+    
+    // Update task category
+    const updatedTask = { ...activeTask, category: newCategory };
+    const updatedTasks = tasks.map(task =>
+      task.id === active.id ? updatedTask : task
+    );
+    
+    setTasks(updatedTasks);
+    showSuccessToast(`Task moved to ${newCategory}`);
+
+    // Sync with database
+    try {
+      await fetch(`/api/tasks/${activeTask.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: newCategory }),
+      });
+    } catch (error) {
+      console.error('Error updating task:', error);
+      showErrorToast('Failed to update task');
+      loadTasks();
+    }
+  };
+
+  const handleUpdateTask = (updatedTask: Task) => {
+    setTasks(tasks.map(t => t.id === updatedTask.id ? updatedTask : t));
+  };
+
   const handleToggleComplete = async (taskId: string, completed: boolean) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
     // Optimistically update UI
     setTasks(tasks.map(task => 
       task.id === taskId ? { ...task, completed } : task
@@ -140,14 +266,22 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ completed }),
       });
+
+      
+      if (completed) {
+        showTaskCompleted(task.title);
+      }
     } catch (error) {
       console.error('Error toggling task:', error);
-      setError('Failed to update task');
+      showErrorToast('Failed to update task');
       loadTasks();
     }
   };
 
   const handleDeleteTask = async (taskId: string) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
     // Optimistically update UI
     setTasks(tasks.filter(task => task.id !== taskId));
 
@@ -156,222 +290,235 @@ export default function Home() {
       await fetch(`/api/tasks/${taskId}`, {
         method: 'DELETE',
       });
+      showTaskDeleted(task.title);
     } catch (error) {
       console.error('Error deleting task:', error);
-      setError('Failed to delete task');
+      showErrorToast('Failed to delete task');
       loadTasks();
     }
   };
 
-  return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-100 relative overflow-hidden">
-      {/* Animated background elements */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <motion.div
-          className="absolute top-20 left-10 w-72 h-72 bg-blue-200 rounded-full mix-blend-multiply filter blur-xl opacity-30"
-          animate={{
-            x: [0, 100, 0],
-            y: [0, 50, 0],
-          }}
-          transition={{
-            duration: 20,
-            repeat: Infinity,
-            ease: "easeInOut"
-          }}
-        />
-        <motion.div
-          className="absolute top-40 right-10 w-96 h-96 bg-purple-200 rounded-full mix-blend-multiply filter blur-xl opacity-30"
-          animate={{
-            x: [0, -50, 0],
-            y: [0, 100, 0],
-          }}
-          transition={{
-            duration: 15,
-            repeat: Infinity,
-            ease: "easeInOut"
-          }}
-        />
-        <motion.div
-          className="absolute -bottom-32 left-1/2 w-96 h-96 bg-pink-200 rounded-full mix-blend-multiply filter blur-xl opacity-30"
-          animate={{
-            x: [0, 100, 0],
-            y: [0, -50, 0],
-          }}
-          transition={{
-            duration: 25,
-            repeat: Infinity,
-            ease: "easeInOut"
-          }}
-        />
-      </div>
+  const handleEditTask = (task: Task) => {
+    setEditingTask(task);
+  };
 
-      <div className="container mx-auto px-4 py-12 relative z-10">
-        <motion.header 
-          className="text-center mb-16"
-          initial={{ opacity: 0, y: -20 }}
+  const handleSaveEdit = async (updatedTask: Task) => {
+    // Optimistically update UI
+    setTasks(tasks.map(t => t.id === updatedTask.id ? updatedTask : t));
+
+    // Sync with database
+    try {
+      await fetch(`/api/tasks/${updatedTask.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedTask),
+      });
+      showSuccessToast('Task updated successfully!');
+      setEditingTask(null);
+    } catch (error) {
+      console.error('Error updating task:', error);
+      showErrorToast('Failed to update task');
+      loadTasks();
+    }
+  };
+
+  const handleClearCompleted = async () => {
+    const completedTasks = tasks.filter(t => t.completed);
+    if (completedTasks.length === 0) return;
+
+    try {
+      // Delete all completed tasks
+      await Promise.all(
+        completedTasks.map(task =>
+          fetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
+        )
+      );
+      
+      setTasks(tasks.filter(t => !t.completed));
+      showBulkDeleteToast(completedTasks.length);
+    } catch (error) {
+      console.error('Error clearing completed tasks:', error);
+      showErrorToast('Failed to clear completed tasks');
+    }
+  };
+
+  const renderView = () => {
+    switch (currentView) {
+      case 'completed':
+        return <Completed tasks={tasks} onDelete={handleDeleteTask} />;
+      case 'analytics':
+        return <Analytics tasks={tasks} />;
+      case 'calendar':
+        return <Calendar tasks={tasks} />;
+      case 'reports':
+        return <Reports tasks={tasksToDisplay} />;
+      default:
+        return renderDashboard();
+    }
+  };
+
+  const renderDashboard = () => (
+    <>
+      {error && (
+        <motion.div 
+          className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4"
+          initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
         >
-          <motion.div
-            className="inline-flex items-center gap-2 mb-6"
-            whileHover={{ scale: 1.05 }}
-          >
-           
-            <h1 className="text-6xl font-extrabold bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
-              Baaz Task Manager
-            </h1>
-           
-          </motion.div>
-          <motion.p 
-            className="text-2xl text-gray-700 font-medium"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.3 }}
-          >
-            Speak your tasks, let AI organize them
-          </motion.p>
-          <motion.div
-            className="mt-4 inline-block px-4 py-2 bg-white/60 backdrop-blur-sm rounded-full shadow-sm"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.5 }}
-          >
-            <p className="text-sm text-gray-600">
-              Powered by Free AI - No costs, No limits
-            </p>
-          </motion.div>
-        </motion.header>
+          <p className="text-sm font-medium">{error}</p>
+        </motion.div>
+      )}
 
-        <div className="flex flex-col items-center gap-8">
-          <AnimatePresence mode="wait">
-            {error && (
-              <motion.div 
-                className="max-w-md w-full bg-red-50 border-2 border-red-300 text-red-700 px-6 py-4 rounded-xl shadow-lg backdrop-blur-sm"
-                initial={{ opacity: 0, y: -20, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -20, scale: 0.95 }}
-                transition={{ duration: 0.3 }}
-              >
-                <p className="text-sm font-medium">{error}</p>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <div className="w-full max-w-7xl">
-            {isLoading ? (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="flex flex-col items-center justify-center py-20"
-              >
-                <Loader2 className="w-12 h-12 text-purple-600 animate-spin mb-4" />
-                <p className="text-gray-600">Loading your tasks...</p>
-              </motion.div>
-            ) : showVoiceInput ? (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="max-w-4xl mx-auto"
-              >
-                {!transcription ? (
-                  <>
-                    <VoiceRecorder
-                      onTranscriptionComplete={handleTranscriptionComplete}
-                      onError={handleError}
-                    />
-                    <motion.button
-                      onClick={() => setShowVoiceInput(false)}
-                      className="mt-4 flex items-center gap-2 px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors mx-auto"
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                    >
-                      <ArrowLeft className="w-4 h-4" />
-                      Back to Dashboard
-                    </motion.button>
-                  </>
-                ) : (
-                  <>
-                    <TranscriptionDisplay
-                      text={transcription}
-                      onClear={handleClearTranscription}
-                      onConfirm={handleConfirmTranscription}
-                    />
-                    {isParsing && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="mt-6 bg-gradient-to-r from-purple-50 to-pink-50 border-2 border-purple-300 rounded-xl p-6 text-center"
-                      >
-                        <Loader2 className="w-12 h-12 text-purple-600 animate-spin mx-auto mb-3" />
-                        <p className="text-lg font-bold text-purple-900 mb-1">
-                          AI is analyzing your tasks...
-                        </p>
-                        <p className="text-sm text-purple-700">
-                          Extracting tasks, categories, and due dates
-                        </p>
-                      </motion.div>
-                    )}
-                  </>
-                )}
-              </motion.div>
-            ) : (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="space-y-6"
-              >
-                <div className="flex items-center justify-between mb-8">
-                  <div>
-                    <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-                      Your Task Board
-                    </h2>
-                    <p className="text-gray-600 mt-1">
-                      {tasks.length} {tasks.length === 1 ? 'task' : 'tasks'} • Drag to organize
-                    </p>
-                  </div>
-                  <motion.button
-                    onClick={() => setShowVoiceInput(true)}
-                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-bold rounded-xl shadow-lg transition-all"
-                    whileHover={{ scale: 1.05, boxShadow: "0 20px 40px rgba(139, 92, 246, 0.3)" }}
-                    whileTap={{ scale: 0.95 }}
-                  >
-                    <Plus className="w-5 h-5" />
-                    Add Tasks with Voice
-                  </motion.button>
-                </div>
-
-                {tasks.length === 0 ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="text-center py-20 bg-white/50 backdrop-blur-sm rounded-2xl border-2 border-dashed border-gray-300"
-                  >
-                    <div className="text-6xl mb-4">🎙️</div>
-                    <h3 className="text-2xl font-bold text-gray-700 mb-2">No tasks yet!</h3>
-                    <p className="text-gray-600 mb-6">Start by adding your first task with voice</p>
-                    <motion.button
-                      onClick={() => setShowVoiceInput(true)}
-                      className="px-8 py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-bold rounded-xl shadow-lg"
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                    >
-                      🎤 Record Your Tasks
-                    </motion.button>
-                  </motion.div>
-                ) : (
-                  <TaskBoard
-                    tasks={tasks}
-                    onUpdateTasks={handleUpdateTasks}
-                    onToggleComplete={handleToggleComplete}
-                    onDeleteTask={handleDeleteTask}
-                  />
-                )}
-              </motion.div>
-            )}
-          </div>
+      {isLoading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="w-12 h-12 text-indigo-600 animate-spin" />
         </div>
+      ) : showVoiceInput ? (
+        <div className="max-w-3xl mx-auto">
+          {!transcription ? (
+            <>
+              <VoiceRecorder
+                onTranscriptionComplete={handleTranscriptionComplete}
+                onError={handleError}
+              />
+              <div className="flex justify-center mt-6">
+                <button
+                  onClick={() => setShowVoiceInput(false)}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 font-medium"
+                >
+                  ← Back to Dashboard
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <TranscriptionDisplay
+                text={transcription}
+                onClear={handleClearTranscription}
+                onConfirm={handleConfirmTranscription}
+              />
+              {isParsing && (
+                <div className="mt-6 bg-white border border-gray-200 rounded-2xl p-8 text-center">
+                  <Loader2 className="w-12 h-12 text-indigo-600 animate-spin mx-auto mb-4" />
+                  <p className="text-lg font-semibold text-gray-900 mb-2">
+                    AI is analyzing your tasks...
+                  </p>
+                  <p className="text-sm text-gray-500">
+                    Extracting tasks, categories, and due dates
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Action Button */}
+          <div className="flex justify-between items-center mb-6">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Projects Overview</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                {tasks.length} total • {tasks.filter(t => t.completed).length} completed
+              </p>
+            </div>
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => setShowVoiceInput(true)}
+              className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium text-sm transition-colors"
+            >
+              <Mic className="w-4 h-4" />
+              Add New Task
+            </motion.button>
+          </div>
+
+            {tasks.length === 0 ? (
+              <div className="text-center py-20 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800">
+                <div className="w-16 h-16 bg-indigo-100 dark:bg-indigo-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Mic className="w-8 h-8 text-indigo-600 dark:text-indigo-400" />
+                </div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-2">No tasks yet</h3>
+                <p className="text-gray-500 dark:text-gray-400 mb-6">Start by adding your first task with voice</p>
+                <button
+                  onClick={() => setShowVoiceInput(true)}
+                  className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium"
+                >
+                  🎤 Record Your Tasks
+                </button>
+              </div>
+            ) : (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+              >
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  <CategoryColumn
+                    category="Work"
+                    tasks={tasksByCategory.Work}
+                    onToggleComplete={handleToggleComplete}
+                    onDelete={handleDeleteTask}
+                    onEdit={handleEditTask}
+                    onUpdateTask={handleUpdateTask}
+                  />
+                  <CategoryColumn
+                    category="Personal"
+                    tasks={tasksByCategory.Personal}
+                    onToggleComplete={handleToggleComplete}
+                    onDelete={handleDeleteTask}
+                    onEdit={handleEditTask}
+                    onUpdateTask={handleUpdateTask}
+                  />
+                  <CategoryColumn
+                    category="Health"
+                    tasks={tasksByCategory.Health}
+                    onToggleComplete={handleToggleComplete}
+                    onDelete={handleDeleteTask}
+                    onEdit={handleEditTask}
+                    onUpdateTask={handleUpdateTask}
+                  />
+                  <CategoryColumn
+                    category="Errands"
+                    tasks={tasksByCategory.Errands}
+                    onToggleComplete={handleToggleComplete}
+                    onDelete={handleDeleteTask}
+                    onEdit={handleEditTask}
+                    onUpdateTask={handleUpdateTask}
+                  />
+                </div>
+              </DndContext>
+            )}
+        </>
+      )}
+    </>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0a]">
+      <Sidebar 
+        activeView={currentView} 
+        onViewChange={setCurrentView}
+      />
+      <TopBar 
+        userName="Megko" 
+        subtitle="Lets organize your Daily Tasks" 
+        onSearch={handleSearch}
+      />
+      <RightPanel tasks={tasks} />
+      
+      {/* Edit Task Modal */}
+      <EditTaskModal
+        task={editingTask}
+        isOpen={!!editingTask}
+        onClose={() => setEditingTask(null)}
+        onSave={handleSaveEdit}
+      />
+      
+      {/* Main Content */}
+      <div className="ml-64 mr-80 pt-24 px-8 pb-8">
+        {renderView()}
       </div>
-    </main>
+    </div>
   );
 }
 

@@ -1,13 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, taskRowToTask, taskToTaskRow, TaskRow } from '@/lib/supabase';
 
-// GET /api/tasks - Fetch all tasks
-export async function GET() {
+// GET /api/tasks - Fetch all tasks with pagination support
+export async function GET(request: NextRequest) {
   try {
+    const { searchParams } = new URL(request.url);
+    const page = parseInt(searchParams.get('page') || '1', 10);
+    const limit = parseInt(searchParams.get('limit') || '1000', 10); // Default to 1000 (all tasks)
+    const offset = (page - 1) * limit;
+
+    // Get total count
+    const { count: totalCount } = await supabase
+      .from('tasks')
+      .select('*', { count: 'exact', head: true });
+
+    // Get paginated data
     const { data, error } = await supabase
       .from('tasks')
       .select('*')
-      .order('position', { ascending: true });
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
 
     if (error) {
       console.error('Supabase error:', error);
@@ -19,7 +31,16 @@ export async function GET() {
 
     const tasks = (data as TaskRow[]).map(taskRowToTask);
 
-    return NextResponse.json({ tasks, success: true });
+    return NextResponse.json({ 
+      tasks,
+      pagination: {
+        page,
+        limit,
+        total: totalCount || 0,
+        totalPages: Math.ceil((totalCount || 0) / limit)
+      },
+      success: true 
+    });
   } catch (error) {
     console.error('Fetch tasks error:', error);
     return NextResponse.json(
