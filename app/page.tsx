@@ -126,7 +126,7 @@ export default function Home() {
       console.log('Parsing transcription:', transcription);
       
       // Step 1: Parse tasks with AI
-      const parseResponse = await fetch('/api/parse-tasks', {
+      const parseResponse = await fetch('/api/parseTasks', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

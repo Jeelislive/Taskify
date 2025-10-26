@@ -163,7 +163,7 @@ Visit [http://localhost:3000](http://localhost:3000) to see your app! 🎉
 Baaz/
 ├── app/
 │   ├── api/
-│   │   ├── parse-tasks/       # AI task parsing endpoint
+│   │   ├── parseTasks/         # AI task parsing endpoint
 │   │   └── tasks/              # CRUD operations for tasks
 │   ├── components/
 │   │   ├── layout/             # Sidebar, TopBar, RightPanel
@@ -215,7 +215,7 @@ The AI understands natural language and automatically:
 ## 🔧 Configuration
 
 ### Changing AI Model
-Edit `app/api/parse-tasks/route.ts`:
+Edit `app/api/parseTasks/route.ts`:
 ```typescript
 const model = genAI.getGenerativeModel({ 
   model: 'gemini-2.0-flash-exp' // Change to gemini-1.5-flash-002 for stable version
@@ -256,7 +256,7 @@ body {
 
 ## 📚 API Documentation
 
-### POST /api/parse-tasks
+### POST /api/parseTasks
 Parse voice transcription into structured tasks.
 
 **Request:**
